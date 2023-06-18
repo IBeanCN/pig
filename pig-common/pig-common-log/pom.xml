@@ -21,7 +21,7 @@
     <parent>
         <groupId>com.pig4cloud</groupId>
         <artifactId>pig-common</artifactId>
-        <version>3.5.2</version>
+        <version>3.6.7</version>
     </parent>
 
     <artifactId>pig-common-log</artifactId>
@@ -36,6 +36,14 @@
             <groupId>com.pig4cloud</groupId>
             <artifactId>pig-common-core</artifactId>
         </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-extra</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-http</artifactId>
+        </dependency>
         <!--UPMS接口模块-->
         <dependency>
             <groupId>com.pig4cloud</groupId>
@@ -45,6 +53,10 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-core</artifactId>
         </dependency>
     </dependencies>
 </project>

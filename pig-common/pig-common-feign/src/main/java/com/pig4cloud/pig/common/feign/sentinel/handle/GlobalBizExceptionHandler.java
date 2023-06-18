@@ -88,8 +88,8 @@ public class GlobalBizExceptionHandler {
 	@ExceptionHandler(AccessDeniedException.class)
 	@ResponseStatus(HttpStatus.FORBIDDEN)
 	public R handleAccessDeniedException(AccessDeniedException e) {
-		String msg = SpringSecurityMessageSource.getAccessor().getMessage("AbstractAccessDecisionManager.accessDenied",
-				e.getMessage());
+		String msg = SpringSecurityMessageSource.getAccessor()
+			.getMessage("AbstractAccessDecisionManager.accessDenied", e.getMessage());
 		log.warn("拒绝授权异常信息 ex={}", msg);
 		return R.failed(e.getLocalizedMessage());
 	}
@@ -104,7 +104,7 @@ public class GlobalBizExceptionHandler {
 	public R handleBodyValidException(MethodArgumentNotValidException exception) {
 		List<FieldError> fieldErrors = exception.getBindingResult().getFieldErrors();
 		log.warn("参数绑定异常,ex = {}", fieldErrors.get(0).getDefaultMessage());
-		return R.failed(fieldErrors.get(0).getDefaultMessage());
+		return R.failed(String.format("%s %s", fieldErrors.get(0).getField(), fieldErrors.get(0).getDefaultMessage()));
 	}
 
 	/**

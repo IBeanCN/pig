@@ -30,6 +30,7 @@ import com.pig4cloud.pig.admin.api.util.ParamResolver;
 import com.pig4cloud.pig.admin.api.vo.UserExcelVO;
 import com.pig4cloud.pig.admin.api.vo.UserVO;
 import com.pig4cloud.pig.admin.mapper.*;
+import com.pig4cloud.pig.admin.service.AppService;
 import com.pig4cloud.pig.admin.service.SysMenuService;
 import com.pig4cloud.pig.admin.service.SysUserService;
 import com.pig4cloud.pig.common.core.constant.CacheConstants;
@@ -38,7 +39,6 @@ import com.pig4cloud.pig.common.core.constant.enums.MenuTypeEnum;
 import com.pig4cloud.pig.common.core.exception.ErrorCodes;
 import com.pig4cloud.pig.common.core.util.MsgUtils;
 import com.pig4cloud.pig.common.core.util.R;
-import com.pig4cloud.pig.common.security.util.SecurityUtils;
 import com.pig4cloud.plugin.excel.vo.ErrorMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -65,6 +65,8 @@ import java.util.stream.Collectors;
 public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> implements SysUserService {
 
 	private static final PasswordEncoder ENCODER = new BCryptPasswordEncoder();
+
+	private final AppService appService;
 
 	private final SysRoleMapper sysRoleMapper;
 
@@ -128,9 +130,13 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 		List<SysPost> postList = sysPostMapper.listPostsByUserId(sysUser.getUserId());
 		userInfo.setPostList(postList);
 		// 设置权限列表（menu.permission）
-		Set<String> permissions = roleIds.stream().map(sysMenuService::findMenuByRoleId).flatMap(Collection::stream)
-				.filter(m -> MenuTypeEnum.BUTTON.getType().equals(m.getType())).map(SysMenu::getPermission)
-				.filter(StrUtil::isNotBlank).collect(Collectors.toSet());
+		Set<String> permissions = roleIds.stream()
+			.map(sysMenuService::findMenuByRoleId)
+			.flatMap(Collection::stream)
+			.filter(m -> MenuTypeEnum.BUTTON.getType().equals(m.getType()))
+			.map(SysMenu::getPermission)
+			.filter(StrUtil::isNotBlank)
+			.collect(Collectors.toSet());
 		userInfo.setPermissions(ArrayUtil.toArray(permissions, String.class));
 
 		return userInfo;
@@ -166,32 +172,41 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 	@CacheEvict(value = CacheConstants.USER_DETAILS, key = "#sysUser.username")
 	public Boolean removeUserById(SysUser sysUser) {
 		sysUserRoleMapper.deleteByUserId(sysUser.getUserId());
+		// 删除用户职位关系
+		sysUserPostMapper.delete(Wrappers.<SysUserPost>lambdaQuery().eq(SysUserPost::getUserId, sysUser.getUserId()));
 		this.removeById(sysUser.getUserId());
 		return Boolean.TRUE;
 	}
 
 	@Override
 	@CacheEvict(value = CacheConstants.USER_DETAILS, key = "#userDto.username")
-	public Boolean updateUserInfo(UserDTO userDto) {
+	public R<Boolean> updateUserInfo(UserDTO userDto) {
 		UserVO userVO = baseMapper.getUserVoByUsername(userDto.getUsername());
 
-		Assert.isTrue(ENCODER.matches(userDto.getPassword(), userVO.getPassword()),
-				MsgUtils.getMessage(ErrorCodes.SYS_USER_UPDATE_PASSWORDERROR));
+		// 判断手机号是否修改,更新手机号校验验证码
+		if (!StrUtil.equals(userVO.getPhone(), userDto.getPhone())) {
+			if (!appService.check(userDto.getPhone(), userDto.getCode())) {
+				return R.failed(MsgUtils.getMessage(ErrorCodes.SYS_APP_SMS_ERROR));
+			}
+		}
 
+		// 修改密码逻辑
 		SysUser sysUser = new SysUser();
 		if (StrUtil.isNotBlank(userDto.getNewpassword1())) {
+			Assert.isTrue(ENCODER.matches(userDto.getPassword(), userVO.getPassword()),
+					MsgUtils.getMessage(ErrorCodes.SYS_USER_UPDATE_PASSWORDERROR));
 			sysUser.setPassword(ENCODER.encode(userDto.getNewpassword1()));
 		}
 		sysUser.setPhone(userDto.getPhone());
 		sysUser.setUserId(userVO.getUserId());
 		sysUser.setAvatar(userDto.getAvatar());
-		return this.updateById(sysUser);
+		return R.ok(this.updateById(sysUser));
 	}
 
 	@Override
 	@Transactional(rollbackFor = Exception.class)
 	@CacheEvict(value = CacheConstants.USER_DETAILS, key = "#userDto.username")
-	public Boolean updateUser(UserDTO userDto) {
+	public R<Boolean> updateUser(UserDTO userDto) {
 		SysUser sysUser = new SysUser();
 		BeanUtils.copyProperties(userDto, sysUser);
 		sysUser.setUpdateTime(LocalDateTime.now());
@@ -202,7 +217,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 		this.updateById(sysUser);
 
 		sysUserRoleMapper
-				.delete(Wrappers.<SysUserRole>update().lambda().eq(SysUserRole::getUserId, userDto.getUserId()));
+			.delete(Wrappers.<SysUserRole>update().lambda().eq(SysUserRole::getUserId, userDto.getUserId()));
 		userDto.getRole().forEach(roleId -> {
 			SysUserRole userRole = new SysUserRole();
 			userRole.setUserId(sysUser.getUserId());
@@ -216,7 +231,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 			userPost.setPostId(postId);
 			userPost.insert();
 		});
-		return Boolean.TRUE;
+		return R.ok();
 	}
 
 	/**
@@ -249,11 +264,15 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 		List<UserExcelVO> userExcelVOList = voList.stream().map(userVO -> {
 			UserExcelVO excelVO = new UserExcelVO();
 			BeanUtils.copyProperties(userVO, excelVO);
-			String roleNameList = userVO.getRoleList().stream().map(SysRole::getRoleName)
-					.collect(Collectors.joining(StrUtil.COMMA));
+			String roleNameList = userVO.getRoleList()
+				.stream()
+				.map(SysRole::getRoleName)
+				.collect(Collectors.joining(StrUtil.COMMA));
 			excelVO.setRoleNameList(roleNameList);
-			String postNameList = userVO.getPostList().stream().map(SysPost::getPostName)
-					.collect(Collectors.joining(StrUtil.COMMA));
+			String postNameList = userVO.getPostList()
+				.stream()
+				.map(SysPost::getPostName)
+				.collect(Collectors.joining(StrUtil.COMMA));
 			excelVO.setPostNameList(postNameList);
 			return excelVO;
 		}).collect(Collectors.toList());
@@ -278,20 +297,20 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 		List<SysPost> postList = sysPostMapper.selectList(Wrappers.emptyWrapper());
 
 		// 执行数据插入操作 组装 UserDto
-		for (int i = 0; i < excelVOList.size(); i++) {
-			UserExcelVO excel = excelVOList.get(i);
+		for (UserExcelVO excel : excelVOList) {
 			Set<String> errorMsg = new HashSet<>();
 			// 校验用户名是否存在
-			boolean exsitUserName = userList.stream()
-					.anyMatch(sysUser -> excel.getUsername().equals(sysUser.getUsername()));
+			boolean existUserName = userList.stream()
+				.anyMatch(sysUser -> excel.getUsername().equals(sysUser.getUsername()));
 
-			if (exsitUserName) {
+			if (existUserName) {
 				errorMsg.add(MsgUtils.getMessage(ErrorCodes.SYS_USER_USERNAME_EXISTING, excel.getUsername()));
 			}
 
 			// 判断输入的部门名称列表是否合法
 			Optional<SysDept> deptOptional = deptList.stream()
-					.filter(dept -> excel.getDeptName().equals(dept.getName())).findFirst();
+				.filter(dept -> excel.getDeptName().equals(dept.getName()))
+				.findFirst();
 			if (!deptOptional.isPresent()) {
 				errorMsg.add(MsgUtils.getMessage(ErrorCodes.SYS_DEPT_DEPTNAME_INEXISTENCE, excel.getDeptName()));
 			}
@@ -299,8 +318,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 			// 判断输入的角色名称列表是否合法
 			List<String> roleNameList = StrUtil.split(excel.getRoleNameList(), StrUtil.COMMA);
 			List<SysRole> roleCollList = roleList.stream()
-					.filter(role -> roleNameList.stream().anyMatch(name -> role.getRoleName().equals(name)))
-					.collect(Collectors.toList());
+				.filter(role -> roleNameList.stream().anyMatch(name -> role.getRoleName().equals(name)))
+				.collect(Collectors.toList());
 
 			if (roleCollList.size() != roleNameList.size()) {
 				errorMsg.add(MsgUtils.getMessage(ErrorCodes.SYS_ROLE_ROLENAME_INEXISTENCE, excel.getRoleNameList()));
@@ -309,8 +328,8 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 			// 判断输入的岗位名称列表是否合法
 			List<String> postNameList = StrUtil.split(excel.getPostNameList(), StrUtil.COMMA);
 			List<SysPost> postCollList = postList.stream()
-					.filter(post -> postNameList.stream().anyMatch(name -> post.getPostName().equals(name)))
-					.collect(Collectors.toList());
+				.filter(post -> postNameList.stream().anyMatch(name -> post.getPostName().equals(name)))
+				.collect(Collectors.toList());
 
 			if (postCollList.size() != postNameList.size()) {
 				errorMsg.add(MsgUtils.getMessage(ErrorCodes.SYS_POST_POSTNAME_INEXISTENCE, excel.getPostNameList()));
@@ -322,7 +341,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 			}
 			else {
 				// 数据不合法情况
-				errorMessageList.add(new ErrorMessage((long) (i + 2), errorMsg));
+				errorMessageList.add(new ErrorMessage(excel.getLineNum(), errorMsg));
 			}
 
 		}
@@ -368,6 +387,11 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 	 */
 	@Override
 	public R<Boolean> registerUser(UserDTO userDto) {
+		// 校验验证码
+		if (!appService.check(userDto.getPhone(), userDto.getCode())) {
+			return R.failed(MsgUtils.getMessage(ErrorCodes.SYS_APP_SMS_ERROR));
+		}
+
 		// 判断用户名是否存在
 		SysUser sysUser = this.getOne(Wrappers.<SysUser>lambdaQuery().eq(SysUser::getUsername, userDto.getUsername()));
 		if (sysUser != null) {
@@ -378,7 +402,7 @@ public class SysUserServiceImpl extends ServiceImpl<SysUserMapper, SysUser> impl
 		String defaultRole = ParamResolver.getStr("USER_DEFAULT_ROLE");
 		// 默认角色
 		SysRole sysRole = sysRoleMapper
-				.selectOne(Wrappers.<SysRole>lambdaQuery().eq(SysRole::getRoleCode, defaultRole));
+			.selectOne(Wrappers.<SysRole>lambdaQuery().eq(SysRole::getRoleCode, defaultRole));
 
 		if (sysRole == null) {
 			return R.failed(MsgUtils.getMessage(ErrorCodes.SYS_PARAM_CONFIG_ERROR, "USER_DEFAULT_ROLE"));
